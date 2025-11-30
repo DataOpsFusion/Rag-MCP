@@ -1,0 +1,84 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "rag-mcp-qdrant"
+version = "0.1.0"
+description = "A minimal RAG service with MCP tools for document ingestion and semantic search using Qdrant"
+readme = "README.md"
+requires-python = ">=3.10"
+license = {text = "MIT"}
+authors = [
+    {name = "Your Name", email = "your.email@example.com"}
+]
+keywords = ["mcp", "rag", "vector-search", "embeddings", "qdrant"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+]
+
+dependencies = [
+    "fastmcp>=2.0.0",
+    "huggingface-hub>=0.20.0",
+    "langchain-huggingface>=1.0.0",
+    "langchain-text-splitters>=0.3.0",
+    "mcp>=1.0.0",
+    "pydantic>=2.0.0",
+    "python-dotenv>=1.0.0",
+    "qdrant-client>=1.7.0",
+    "sentence-transformers>=3.0.0",
+    "torch>=2.0.0; platform_machine != 'x86_64'",
+    "torch==2.5.1+cpu; platform_machine == 'x86_64'",
+    "transformers>=4.30.0",
+]
+
+[tool.uv.sources]
+torch = [
+    { index = "pytorch-cpu", marker = "platform_machine == 'x86_64'" },
+]
+
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true
+
+[project.optional-dependencies]
+dev = [
+    "pytest",
+    "pytest-asyncio",
+    "black",
+    "ruff",
+]
+
+# Vector store backends
+chroma = [
+    "chromadb>=0.4.0",
+]
+
+milvus = [
+    "pymilvus>=2.3.0",
+]
+
+weaviate = [
+    "weaviate-client>=3.25.0",
+]
+
+[project.scripts]
+rag-mcp-qdrant = "mcp_server.main:main"
+
+[project.urls]
+Homepage = "https://github.com/yourusername/rag-mcp"
+Repository = "https://github.com/yourusername/rag-mcp"
+Issues = "https://github.com/yourusername/rag-mcp/issues"
+
+[tool.setuptools]
+packages = ["mcp_server", "rag_core"]
+
+[tool.setuptools.package-data]
+"*" = ["*.txt", "*.md"]
