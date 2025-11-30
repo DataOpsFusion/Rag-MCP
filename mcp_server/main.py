@@ -6,7 +6,7 @@ from pydantic import Field
 from rag_core.config import RagConfig, get_config
 from rag_core.model import Model
 from rag_core.search import RagService
-from rag_core.vector_store import QdrantVectorStore
+from rag_core.vector_store import QdrantVectorStore, ChromaVectorStore
 
 from .models import (
     ChunkingOptions,
@@ -22,20 +22,22 @@ mcp = FastMCP("RAG MCP")
 
 _config: RagConfig = get_config()
 _model = Model(model_name=_config.model_name, device=_config.model_device)
-_vector_store = QdrantVectorStore.from_config(_config)
+
+if _config.vector_store.lower() == "chroma":
+    _vector_store = ChromaVectorStore.from_config(_config)
+elif _config.vector_store.lower() == "qdrant":
+    _vector_store = QdrantVectorStore.from_config(_config)
+else:
+    raise ValueError(f"Unsupported vector store: {_config.vector_store}. Use 'qdrant' or 'chroma'")
+
 _rag = RagService(model=_model, vector_store=_vector_store, config=_config)
 
 
-@mcp.tool(
-    description="Ingest and index documents into a collection using LangChain chunking and embeddings.",
-)
+@mcp.tool(description="Ingest and index documents into a collection.")
 def ingest_documents(
-    collection: Annotated[str, Field(description="Target collection name.")],
-    documents: Annotated[Documents, Field(description="List of documents: {id?, text, metadata?}.")],
-    chunking: Annotated[
-        ChunkingOptions,
-        Field(description="Chunking options: {chunk_size?, overlap?}; falls back to config defaults."),
-    ],
+    collection: Annotated[str, Field(description="Collection name to store documents in.")],
+    documents: Annotated[Documents, Field(description="List of document objects with 'text' field required.")],
+    chunking: Annotated[ChunkingOptions, Field(description="Chunking settings. Pass {} for defaults.")] = {},
 ) -> IngestionResult:
     chunk_size = (chunking or {}).get("chunk_size") or _config.default_chunk_size
     overlap = (chunking or {}).get("overlap") or _config.default_chunk_overlap
@@ -47,9 +49,7 @@ def ingest_documents(
     )
 
 
-@mcp.tool(
-    description="Semantic search across indexed chunks.",
-)
+@mcp.tool(description="Semantic search across indexed chunks.")
 def search(
     collection: Annotated[str, Field(description="Target collection name.")],
     query: Annotated[str, Field(description="Query text to embed and search for.")],
@@ -64,9 +64,7 @@ def search(
     )
 
 
-@mcp.tool(
-    description="Fetch a specific chunk by id.",
-)
+@mcp.tool(description="Fetch a specific chunk by id.")
 def get_chunk(
     collection: Annotated[str, Field(description="Target collection name.")],
     chunk_id: Annotated[str, Field(description="Chunk identifier returned from search/ingest.")],
@@ -74,18 +72,14 @@ def get_chunk(
     return _rag.get_chunk(collection=collection, chunk_id=chunk_id)
 
 
-@mcp.tool(
-    description="List unique document ids stored in the collection.",
-)
+@mcp.tool(description="List unique document ids stored in the collection.")
 def get_list(
     collection: Annotated[str, Field(description="Target collection name.")],
 ) -> GetListResult:
     return {"ids": _rag.list_doc_ids(collection=collection)}
 
 
-@mcp.tool(
-    description="Delete all chunks for a given document id.",
-)
+@mcp.tool(description="Delete all chunks for a given document id.")
 def delete(
     collection: Annotated[str, Field(description="Target collection name.")],
     doc_id: Annotated[str, Field(description="Document identifier whose chunks should be removed.")],
@@ -94,5 +88,9 @@ def delete(
     return {"success": success, "errors": {"message": error} if error else None}
 
 
-if __name__ == "__main__":
+def main():
     mcp.run()
+
+
+if __name__ == "__main__":
+    main()
