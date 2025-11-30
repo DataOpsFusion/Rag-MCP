@@ -1,7 +1,3 @@
-"""
-Pluggable vector-store interfaces and a Qdrant implementation.
-"""
-
 from __future__ import annotations
 
 import logging
@@ -13,9 +9,16 @@ from .config import RagConfig
 try:
     from qdrant_client import QdrantClient
     from qdrant_client.http import models as rest
-except ImportError:  # pragma: no cover - optional dependency until Qdrant is used
+except ImportError:
     QdrantClient = None
     rest = None
+
+try:
+    import chromadb
+    from chromadb.config import Settings as ChromaSettings
+except ImportError:
+    chromadb = None
+    ChromaSettings = None
 
 logger = logging.getLogger(__name__)
 
@@ -27,7 +30,6 @@ class VectorHit(TypedDict, total=False):
 
 
 class VectorStore(Protocol):
-    """Protocol for vector database backends."""
 
     def ensure_collection(self, name: str, dim: int) -> None:
         ...
@@ -49,7 +51,6 @@ class VectorStore(Protocol):
 
 
 class QdrantVectorStore:
-    """Qdrant-backed VectorStore implementation."""
 
     def __init__(
         self,
@@ -62,7 +63,7 @@ class QdrantVectorStore:
         collection_prefix: str = "",
     ):
         if client is None:
-            if QdrantClient is None or rest is None:  # pragma: no cover
+            if QdrantClient is None or rest is None:
                 raise RuntimeError("Install qdrant-client to use QdrantVectorStore")
             client = QdrantClient(host=host, port=port, https=https, api_key=api_key)
 
@@ -90,7 +91,7 @@ class QdrantVectorStore:
         except Exception:
             pass
 
-        if rest is None:  # pragma: no cover
+        if rest is None:
             raise RuntimeError("qdrant-client models not available")
 
         self._client.create_collection(
@@ -113,14 +114,14 @@ class QdrantVectorStore:
 
     def search(self, collection: str, vector: List[float], limit: int) -> List[VectorHit]:
         collection_name = self._full(collection)
-        results = self._client.search(
+        results = self._client.query_points(
             collection_name=collection_name,
-            query_vector=vector,
+            query=vector,
             limit=limit,
             with_payload=True,
         )
         hits: List[VectorHit] = []
-        for hit in results:
+        for hit in results.points:
             hits.append(
                 {
                     "id": str(hit.id),
@@ -131,49 +132,61 @@ class QdrantVectorStore:
         return hits
 
     def retrieve(self, collection: str, ids: List[str]) -> List[VectorHit]:
+        if rest is None:
+            raise RuntimeError("qdrant-client models not available")
+        
         collection_name = self._full(collection)
-        records = self._client.retrieve(
-            collection_name=collection_name,
-            ids=ids,
-            with_payload=True,
-        )
         hits: List[VectorHit] = []
-        for record in records:
-            hits.append(
-                {
-                    "id": str(record.id),
-                    "score": 1.0,
-                    "payload": record.payload or {},
-                }
+        
+        for chunk_id in ids:
+            points, _ = self._client.scroll(
+                collection_name=collection_name,
+                scroll_filter=rest.Filter(
+                    must=[
+                        rest.FieldCondition(
+                            key="chunk_id",
+                            match=rest.MatchValue(value=chunk_id),
+                        )
+                    ]
+                ),
+                limit=1,
+                with_payload=True,
             )
+            for point in points:
+                hits.append(
+                    {
+                        "id": str(point.id),
+                        "score": 1.0,
+                        "payload": point.payload or {},
+                    }
+                )
         return hits
 
     def list_doc_ids(self, collection: str, *, limit: int = 10_000) -> List[str]:
         collection_name = self._full(collection)
         ids: List[str] = []
-        next_offset: Optional[int] = None
+        next_offset = None
 
         while True:
-            scroll = self._client.scroll(
+            points, next_offset = self._client.scroll(
                 collection_name=collection_name,
                 limit=256,
                 with_payload=True,
                 offset=next_offset,
             )
-            for point in scroll.points:
+            for point in points:
                 payload = point.payload or {}
                 doc_id = payload.get("doc_id")
                 if doc_id and doc_id not in ids:
                     ids.append(doc_id)
                     if len(ids) >= limit:
                         return ids
-            next_offset = scroll.next_page_offset
             if next_offset is None:
                 break
         return ids
 
     def delete_doc(self, collection: str, doc_id: str) -> Tuple[bool, Optional[str]]:
-        if rest is None:  # pragma: no cover
+        if rest is None:
             raise RuntimeError("qdrant-client models not available")
 
         collection_name = self._full(collection)
@@ -191,6 +204,141 @@ class QdrantVectorStore:
                 points_selector=rest.FilterSelector(filter=filter_payload),
             )
             return True, None
-        except Exception as exc:  # pragma: no cover
+        except Exception as exc:
+            logger.exception("Failed to delete doc %s from %s", doc_id, collection_name)
+            return False, str(exc)
+
+
+class ChromaVectorStore:
+
+    def __init__(
+        self,
+        client: Any = None,
+        *,
+        persist_directory: Optional[str] = None,
+        collection_prefix: str = "",
+    ):
+        if client is None:
+            if chromadb is None:
+                raise RuntimeError("Install chromadb to use ChromaVectorStore: pip install chromadb")
+            if persist_directory:
+                client = chromadb.PersistentClient(path=persist_directory)
+            else:
+                client = chromadb.Client()
+
+        self._client = client
+        self._collection_prefix = collection_prefix
+        self._collections: Dict[str, Any] = {}
+
+    @classmethod
+    def from_config(cls, config: RagConfig) -> "ChromaVectorStore":
+        persist_dir = getattr(config, "chroma_persist_directory", "./chroma_data")
+        return cls(
+            persist_directory=persist_dir,
+            collection_prefix=config.collection_prefix,
+        )
+
+    def _full(self, name: str) -> str:
+        return f"{self._collection_prefix}{name}"
+
+    def ensure_collection(self, name: str, dim: int) -> None:
+        collection_name = self._full(name)
+        if collection_name not in self._collections:
+            self._collections[collection_name] = self._client.get_or_create_collection(
+                name=collection_name,
+                metadata={"hnsw:space": "cosine"},
+            )
+
+    def upsert(self, collection: str, points: List[Dict[str, Any]]) -> None:
+        collection_name = self._full(collection)
+        coll = self._collections.get(collection_name)
+        if coll is None:
+            coll = self._client.get_collection(collection_name)
+            self._collections[collection_name] = coll
+
+        ids = [str(point["id"]) for point in points]
+        embeddings = [point["vector"] for point in points]
+        metadatas = [point["payload"] for point in points]
+
+        coll.upsert(ids=ids, embeddings=embeddings, metadatas=metadatas)
+
+    def search(self, collection: str, vector: List[float], limit: int) -> List[VectorHit]:
+        collection_name = self._full(collection)
+        coll = self._collections.get(collection_name)
+        if coll is None:
+            coll = self._client.get_collection(collection_name)
+            self._collections[collection_name] = coll
+
+        results = coll.query(query_embeddings=[vector], n_results=limit)
+
+        hits: List[VectorHit] = []
+        if results["ids"] and len(results["ids"]) > 0:
+            for i, doc_id in enumerate(results["ids"][0]):
+                distance = results["distances"][0][i] if results["distances"] else 0.0
+                score = 1.0 - distance
+                metadata = results["metadatas"][0][i] if results["metadatas"] else {}
+                hits.append(
+                    {
+                        "id": str(doc_id),
+                        "score": float(score),
+                        "payload": metadata or {},
+                    }
+                )
+        return hits
+
+    def retrieve(self, collection: str, ids: List[str]) -> List[VectorHit]:
+        collection_name = self._full(collection)
+        coll = self._collections.get(collection_name)
+        if coll is None:
+            coll = self._client.get_collection(collection_name)
+            self._collections[collection_name] = coll
+
+        results = coll.get(ids=ids, include=["metadatas"])
+
+        hits: List[VectorHit] = []
+        if results["ids"]:
+            for i, doc_id in enumerate(results["ids"]):
+                metadata = results["metadatas"][i] if results["metadatas"] else {}
+                hits.append(
+                    {
+                        "id": str(doc_id),
+                        "score": 1.0,
+                        "payload": metadata or {},
+                    }
+                )
+        return hits
+
+    def list_doc_ids(self, collection: str, *, limit: int = 10_000) -> List[str]:
+        collection_name = self._full(collection)
+        coll = self._collections.get(collection_name)
+        if coll is None:
+            coll = self._client.get_collection(collection_name)
+            self._collections[collection_name] = coll
+
+        results = coll.get(limit=limit, include=["metadatas"])
+
+        doc_ids: List[str] = []
+        seen = set()
+        if results["metadatas"]:
+            for metadata in results["metadatas"]:
+                doc_id = metadata.get("doc_id")
+                if doc_id and doc_id not in seen:
+                    doc_ids.append(doc_id)
+                    seen.add(doc_id)
+        return doc_ids
+
+    def delete_doc(self, collection: str, doc_id: str) -> Tuple[bool, Optional[str]]:
+        collection_name = self._full(collection)
+        coll = self._collections.get(collection_name)
+        if coll is None:
+            coll = self._client.get_collection(collection_name)
+            self._collections[collection_name] = coll
+
+        try:
+            results = coll.get(where={"doc_id": doc_id}, include=[])
+            if results["ids"]:
+                coll.delete(ids=results["ids"])
+            return True, None
+        except Exception as exc:
             logger.exception("Failed to delete doc %s from %s", doc_id, collection_name)
             return False, str(exc)
