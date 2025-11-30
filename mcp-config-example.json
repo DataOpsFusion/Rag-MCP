@@ -1,0 +1,21 @@
+{
+  "mcpServers": {
+    "rag-mcp-qdrant": {
+      "command": "uvx",
+      "args": [
+        "--from",
+        "/home/hpc/Application/Rag-MCP",
+        "rag-mcp-qdrant"
+      ],
+      "env": {
+        "MODEL_NAME": "jinaai/jina-embeddings-v2-base-code",
+        "MODEL_DEVICE": "cpu",
+        "QDRANT_HOST": "localhost",
+        "QDRANT_PORT": "6333",
+        "QDRANT_HTTPS": "false",
+        "CHUNK_SIZE": "500",
+        "CHUNK_OVERLAP": "50"
+      }
+    }
+  }
+}
