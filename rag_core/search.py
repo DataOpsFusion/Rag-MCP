@@ -1,7 +1,3 @@
-"""
-RAG ingest/search helper that handles chunking, embedding, and vector store interactions.
-"""
-
 from __future__ import annotations
 
 import logging
@@ -9,12 +5,11 @@ from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 from uuid import uuid4
 
 try:
-    # Newer LangChain splits out text splitters
-    from langchain_text_splitters import RecursiveCharacterTextSplitter  # type: ignore
+    from langchain_text_splitters import RecursiveCharacterTextSplitter
 except ImportError:
     try:
-        from langchain.text_splitter import RecursiveCharacterTextSplitter  # type: ignore
-    except ImportError as exc:  # pragma: no cover
+        from langchain.text_splitter import RecursiveCharacterTextSplitter
+    except ImportError as exc:
         raise RuntimeError("langchain and langchain-text-splitters are required for chunking") from exc
 
 from .config import RagConfig, get_config
@@ -26,7 +21,6 @@ logger = logging.getLogger(__name__)
 
 
 class RagService:
-    """Coordinates chunking, embedding, and vector search against an injected backend."""
 
     def __init__(self, model: Model, vector_store: VectorStore, config: Optional[RagConfig] = None):
         self._model = model
@@ -54,9 +48,6 @@ class RagService:
         chunk_size: Optional[int] = None,
         overlap: Optional[int] = None,
     ) -> Dict[str, Any]:
-        """Chunk, embed, and upsert a batch of documents."""
-
-        # Ensure backend is ready for this embedding dimension
         self._model._inspect()
         if self._model.dim is None:
             raise RuntimeError("Embedding dimension is unknown; failed to inspect model")
@@ -82,11 +73,12 @@ class RagService:
             try:
                 chunk_texts = self._split_texts([raw_text], chunk_size=chunk_size, overlap=overlap)
                 for idx, chunk_text in enumerate(chunk_texts):
+                    point_id = str(uuid4())
                     chunk_id = f"{doc_id}:{idx}"
                     vector = self._embedder.embed_text(chunk_text)
                     points.append(
                         {
-                            "id": chunk_id,
+                            "id": point_id,
                             "vector": vector,
                             "payload": {
                                 "chunk_id": chunk_id,
@@ -99,7 +91,7 @@ class RagService:
                     )
                 doc_ids.append(doc_id)
                 chunks_indexed += len(chunk_texts)
-            except Exception as exc:  # pragma: no cover - runtime errors surfaced in response
+            except Exception as exc:
                 logger.exception("Failed to ingest doc %s", doc_id)
                 errors[doc_id] = str(exc)
 
