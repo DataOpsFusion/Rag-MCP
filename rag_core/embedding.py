@@ -4,19 +4,16 @@ from .model import Model
 
 logger = logging.getLogger(__name__)
 
+
 class Embedding:
     
     def __init__(self, model: Model):
-        """
-        Args:
-            model: An initialized Model instance
-        """
         self._model = model
 
     def embed_text(self, text: str) -> List[float]:
         try:
             self._model._initialize_embeddings()
-            st_model = self._model.client  # Use the client property
+            st_model = self._model.client
             vec = st_model.encode(text, convert_to_numpy=True).tolist()
             return vec
         except Exception as e:
